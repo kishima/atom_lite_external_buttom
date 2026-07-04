@@ -46,8 +46,11 @@ static const char *TAG = "btn";
 #define LINE_MAX      64
 
 // --- ボタン検出 ---
-#define POLL_MS       5             // ポーリング周期
-#define DEBOUNCE_MS   20            // チャタリング除去の安定時間
+// POLL_MS は最低 1 tick（既定 100Hz = 10ms）以上にすること。これより小さいと
+// pdMS_TO_TICKS() が 0 tick に切り捨てられ vTaskDelay(0) になり、タスクが CPU を
+// 離さずアイドルを飢餓させてタスクウォッチドッグが発火する。
+#define POLL_MS       10            // ポーリング周期
+#define DEBOUNCE_MS   30            // チャタリング除去の安定時間（POLL_MS の倍数）
 
 static led_strip_handle_t s_led;
 

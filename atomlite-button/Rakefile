@@ -56,6 +56,11 @@ DOCKER_CMD = [
   IMAGE
 ].join(" ")
 
+# 書き込みボーレート。WSL2 + usbipd 経由の USB シリアルは esptool 既定の
+# 460800 で「No serial data received」になりやすいため、既定を 115200 に下げる。
+# 速い環境で上げたい場合は FLASH_BAUD=460800 のように上書きする。
+FLASH_BAUD = ENV["FLASH_BAUD"].to_s.empty? ? "115200" : ENV["FLASH_BAUD"]
+
 # デバイスアクセスが必要なコマンド（flash/monitor）
 def docker_cmd_with_port(port, interactive: false)
   [
@@ -116,11 +121,9 @@ task :"check-port" do
   puts "ESP32 を #{detected} で検出（#{PORT_CACHE_FILE} にキャッシュ）"
 end
 
-desc "フラッシュ書き込み（FLASH_BAUD で速度変更可）"
+desc "フラッシュ書き込み（既定 115200bps。FLASH_BAUD で変更可）"
 task :flash do
-  baud = ENV["FLASH_BAUD"]
-  baud_opt = baud && !baud.empty? ? "-b #{baud}" : ""
-  sh "#{docker_cmd_with_port(serial_port)} idf.py -p #{serial_port} #{baud_opt} flash".gsub(/\s+/, " ")
+  sh "#{docker_cmd_with_port(serial_port)} idf.py -p #{serial_port} -b #{FLASH_BAUD} flash"
 end
 
 desc "シリアルモニタ"
@@ -130,9 +133,7 @@ end
 
 desc "書き込み + モニタ"
 task :flash_monitor do
-  baud = ENV["FLASH_BAUD"]
-  baud_opt = baud && !baud.empty? ? "-b #{baud}" : ""
-  sh "#{docker_cmd_with_port(serial_port, interactive: true)} idf.py -p #{serial_port} #{baud_opt} flash monitor".gsub(/\s+/, " ")
+  sh "#{docker_cmd_with_port(serial_port, interactive: true)} idf.py -p #{serial_port} -b #{FLASH_BAUD} flash monitor"
 end
 
 desc "menuconfig（設定 UI）"

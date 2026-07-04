@@ -21,7 +21,7 @@ docker compose down           # 停止
 
 | 変数 | 既定 | 意味 |
 |---|---|---|
-| `SERIAL_PORT` | `/dev/ttyACM0` | シリアルポート |
+| `SERIAL_PORT` | `/dev/ttyUSB0` | シリアルポート（`ttyACM0` の個体もある） |
 | `SERIAL_BAUD` | `115200` | ボーレート（ファーム固定値） |
 | `NORMAL_COLOR` | `00FF00` | 正常時の色（緑） |
 | `PRESSED_COLOR` | `FF0000` | 押下時の色（赤） |

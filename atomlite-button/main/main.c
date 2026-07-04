@@ -20,12 +20,18 @@
 //     LED RRGGBB       16進で色指定（例: LED FF8800）
 //     LED OFF          消灯
 //     PING             疎通確認（PONG が返る）
+//
+// ── リンク監視（PC 通信断で白）──
+// PC からの定期通信（ハートビート）が LINK_TIMEOUT_MS 途絶えると、LED を白にして
+// 「PC からの通信が失われた」ことを示す。通信が戻れば PC 側ハートビートが色を
+// 再送するので通常表示に復帰する。PC 側は現在色を定期的に送ること（app.py 参照）。
 #include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 
 #include "driver/gpio.h"
 #include "driver/uart.h"
@@ -43,7 +49,7 @@ static const char *TAG = "btn";
 #define UART_PORT     UART_NUM_0
 #define UART_BAUD     115200
 #define UART_RX_BUF   1024
-#define LINE_MAX      64
+#define RX_LINE_MAX   64            // 受信 1 行の最大長（LINE_MAX は syslimits.h と衝突）
 
 // --- ボタン検出 ---
 // POLL_MS は最低 1 tick（既定 100Hz = 10ms）以上にすること。これより小さいと
@@ -52,7 +58,14 @@ static const char *TAG = "btn";
 #define POLL_MS       10            // ポーリング周期
 #define DEBOUNCE_MS   30            // チャタリング除去の安定時間（POLL_MS の倍数）
 
+// --- リンク監視（PC 通信断で白） ---
+#define LINK_TIMEOUT_MS 3000        // この間 PC から受信が無ければ「通信断」とみなす
+#define LINK_CHECK_MS   500         // 監視タスクのチェック周期
+
 static led_strip_handle_t s_led;
+static SemaphoreHandle_t s_led_mutex;         // led_set を複数タスクから安全に呼ぶ
+static volatile TickType_t s_last_rx_tick;    // PC から最後に受信した時刻
+static volatile bool s_link_lost;             // 通信断で白を表示中か
 
 // ---- UART 送信ヘルパ（行末に CRLF を付けて 1 行送る）----
 static void send_line(const char *s)
@@ -61,11 +74,13 @@ static void send_line(const char *s)
     uart_write_bytes(UART_PORT, "\r\n", 2);
 }
 
-// ---- LED 制御 ----
+// ---- LED 制御（uart_rx / link / init から呼ばれるので排他する）----
 static void led_set(uint8_t r, uint8_t g, uint8_t b)
 {
+    xSemaphoreTake(s_led_mutex, portMAX_DELAY);
     led_strip_set_pixel(s_led, 0, r, g, b);
     led_strip_refresh(s_led);
+    xSemaphoreGive(s_led_mutex);
 }
 
 static void led_init(void)
@@ -159,7 +174,7 @@ static void handle_line(char *line)
 // UART から 1 バイトずつ読み、改行で 1 行にまとめて handle_line へ渡す。
 static void uart_rx_task(void *arg)
 {
-    char line[LINE_MAX];
+    char line[RX_LINE_MAX];
     size_t pos = 0;
     uint8_t byte;
 
@@ -167,19 +182,40 @@ static void uart_rx_task(void *arg)
         int n = uart_read_bytes(UART_PORT, &byte, 1, portMAX_DELAY);
         if (n <= 0) continue;
 
+        // PC から何か受信した = リンク生存。時刻を更新し、白表示中なら解除する
+        // （復帰後の色は PC のハートビートが再送してくれる）。
+        s_last_rx_tick = xTaskGetTickCount();
+        s_link_lost = false;
+
         if (byte == '\n' || byte == '\r') {
             if (pos > 0) {
                 line[pos] = '\0';
                 handle_line(line);
                 pos = 0;
             }
-        } else if (pos < LINE_MAX - 1) {
+        } else if (pos < RX_LINE_MAX - 1) {
             line[pos++] = (char)byte;
         } else {
             // 行が長すぎる。バッファを捨てて次の行から仕切り直す。
             pos = 0;
             send_line("ERR line too long");
         }
+    }
+}
+
+// PC からの受信が LINK_TIMEOUT_MS 途絶えたら LED を白にする。
+// 復帰（受信再開）時は uart_rx_task が s_link_lost を落とし、色は PC の
+// ハートビートが再送するのでここでは白の点灯のみを担当する。
+static void link_task(void *arg)
+{
+    while (1) {
+        TickType_t elapsed = xTaskGetTickCount() - s_last_rx_tick;
+        bool timed_out = elapsed > pdMS_TO_TICKS(LINK_TIMEOUT_MS);
+        if (timed_out && !s_link_lost) {
+            s_link_lost = true;
+            led_set(255, 255, 255);  // 白 = PC からの通信が失われた
+        }
+        vTaskDelay(pdMS_TO_TICKS(LINK_CHECK_MS));
     }
 }
 
@@ -220,11 +256,16 @@ void app_main(void)
     };
     ESP_ERROR_CHECK(gpio_config(&io));
 
+    s_led_mutex = xSemaphoreCreateMutex();     // led_init が led_set を呼ぶので先に作る
+    // 起動直後に即・白へ落ちないよう、受信時刻を「今」で初期化してから監視を始める。
+    s_last_rx_tick = xTaskGetTickCount();
+
     uart_init();
     led_init();
 
     xTaskCreate(uart_rx_task, "uart_rx", 4096, NULL, 10, NULL);
     xTaskCreate(button_task, "button", 3072, NULL, 10, NULL);
+    xTaskCreate(link_task, "link", 3072, NULL, 9, NULL);
 
     ESP_LOGI(TAG, "atomlite-button started");
     send_line("READY");

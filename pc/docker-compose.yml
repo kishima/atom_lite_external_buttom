@@ -16,5 +16,6 @@ services:
       SERIAL_BAUD: "${SERIAL_BAUD:-115200}"
       NORMAL_COLOR: "${NORMAL_COLOR:-00FF00}"   # 正常時=緑
       PRESSED_COLOR: "${PRESSED_COLOR:-FF0000}" # 押下時=赤
+      HEARTBEAT_SEC: "${HEARTBEAT_SEC:-1}"      # 定期通信の周期（断で ATOM が白）
     # USB を抜き差ししても再接続してほしいので常に再起動。
     restart: unless-stopped

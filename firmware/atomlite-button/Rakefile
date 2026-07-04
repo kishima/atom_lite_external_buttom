@@ -1,0 +1,149 @@
+# M5 Atom Lite 外部ボタン — ESP-IDF build wrapper (Docker)
+#
+# 公式 espressif/idf イメージで idf.py を実行する。ホストに ESP-IDF を
+# インストールせず、ビルド/フラッシュ/モニタを Docker 越しに行う。
+#
+# 使い方:
+#   rake build            # ビルド
+#   rake check-port       # シリアルポート自動検出（.serial_port にキャッシュ）
+#   rake flash            # 書き込み（要 USB 接続）
+#   rake monitor          # シリアルモニタ
+#   rake flash_monitor    # 書き込み + モニタ
+#   rake menuconfig       # 設定 UI
+#   rake clean            # build/ を削除
+#
+# 設定は .env で上書き可能（DOCKER_IMAGE, SERIAL_PORT, FLASH_BAUD など）。
+require "rake"
+
+PORT_CACHE_FILE = ".serial_port"
+PROBE_PORTS = ["/dev/ttyUSB0", "/dev/ttyUSB1", "/dev/ttyACM0", "/dev/ttyACM1"]
+
+# .env を読み込む
+if File.exist?(".env")
+  File.readlines(".env").each do |line|
+    line.strip!
+    next if line.empty? || line.start_with?("#")
+    key, value = line.split("=", 2)
+    next unless key && value
+    ENV[key.strip] = value.split("#", 2).first.strip
+  end
+end
+
+UID = `id -u`.strip
+GID = `id -g`.strip
+PWD_ = Dir.pwd
+
+# プロジェクト専用ビルドイメージ（docker/Dockerfile から作る、ESP-IDF v5.5 固定）。
+# DOCKER_IMAGE を .env で指定すればそちらを優先（その場合 rake image は不要）。
+LOCAL_IMAGE = "atomlite-button-idf:v5.5"
+IMAGE       = ENV.fetch("DOCKER_IMAGE", LOCAL_IMAGE)
+
+USER_OPT = "--user #{UID}:#{GID}"
+
+# 専用イメージを使う設定なのに未ビルドなら、自動でビルドする。
+def ensure_image
+  return unless IMAGE == LOCAL_IMAGE
+  return if system("docker image inspect #{LOCAL_IMAGE} > /dev/null 2>&1")
+  Rake::Task[:image].invoke
+end
+
+# 通常コマンド（ビルド等。デバイス不要）
+DOCKER_CMD = [
+  "docker run --rm",
+  USER_OPT,
+  "-e HOME=/tmp",
+  "-v #{PWD_}:/project -w /project",
+  IMAGE
+].join(" ")
+
+# デバイスアクセスが必要なコマンド（flash/monitor）
+def docker_cmd_with_port(port, interactive: false)
+  [
+    "docker run --rm#{interactive ? ' -it' : ''}",
+    "--privileged",
+    "--device=#{port}",
+    "-v /dev/bus/usb:/dev/bus/usb",
+    USER_OPT,
+    # コンテナは --user UID:GID で起動するため dialout 補助グループを持たず、
+    # root:dialout 660 のシリアルデバイスを読めない。デバイスのグループ GID を
+    # 動的に拾って --group-add する（ホスト依存の GID 直書きを避ける）。
+    "--group-add #{File.stat(port).gid}",
+    "-e HOME=/tmp",
+    "-v #{PWD_}:/project -w /project",
+    IMAGE
+  ].join(" ")
+end
+
+def serial_port
+  return ENV["SERIAL_PORT"] unless ENV["SERIAL_PORT"].to_s.empty?
+  if File.exist?(PORT_CACHE_FILE)
+    p = File.read(PORT_CACHE_FILE).strip
+    return p if File.exist?(p)
+  end
+  abort "シリアルポート未設定。`rake check-port` を実行するか SERIAL_PORT= を指定してください。"
+end
+
+desc "プロジェクト専用ビルドイメージを作成（#{LOCAL_IMAGE}）"
+task :image do
+  sh "docker build -t #{LOCAL_IMAGE} #{PWD_}/docker"
+end
+
+desc "ESP-IDF でビルド（初回は自動で set-target esp32）"
+task :build do
+  ensure_image
+  sh "#{DOCKER_CMD} idf.py set-target esp32" unless Dir.exist?("build")
+  sh "#{DOCKER_CMD} idf.py build"
+end
+
+desc "シリアルポートを自動検出して .serial_port にキャッシュ"
+task :"check-port" do
+  ports = PROBE_PORTS.select { |p| File.exist?(p) }
+  abort "シリアルデバイスが見つかりません: #{PROBE_PORTS.join(', ')}" if ports.empty?
+  detected = nil
+  ports.each do |port|
+    print "  #{port} を確認中... "
+    out = `#{docker_cmd_with_port(port)} esptool.py --port #{port} chip_id 2>&1`
+    if out =~ /Detecting chip type\.\.\.\s*(\S+)/ || out =~ /Chip is (ESP32\S*)/
+      puts $1
+      detected = port
+      break
+    else
+      puts "応答なし"
+    end
+  end
+  abort "ESP32 が見つかりませんでした" unless detected
+  File.write(PORT_CACHE_FILE, detected)
+  puts "ESP32 を #{detected} で検出（#{PORT_CACHE_FILE} にキャッシュ）"
+end
+
+desc "フラッシュ書き込み（FLASH_BAUD で速度変更可）"
+task :flash do
+  baud = ENV["FLASH_BAUD"]
+  baud_opt = baud && !baud.empty? ? "-b #{baud}" : ""
+  sh "#{docker_cmd_with_port(serial_port)} idf.py -p #{serial_port} #{baud_opt} flash".gsub(/\s+/, " ")
+end
+
+desc "シリアルモニタ"
+task :monitor do
+  sh "#{docker_cmd_with_port(serial_port, interactive: true)} idf.py -p #{serial_port} monitor"
+end
+
+desc "書き込み + モニタ"
+task :flash_monitor do
+  baud = ENV["FLASH_BAUD"]
+  baud_opt = baud && !baud.empty? ? "-b #{baud}" : ""
+  sh "#{docker_cmd_with_port(serial_port, interactive: true)} idf.py -p #{serial_port} #{baud_opt} flash monitor".gsub(/\s+/, " ")
+end
+
+desc "menuconfig（設定 UI）"
+task :menuconfig do
+  term = ENV["TERM"] || "xterm-256color"
+  sh "docker run --rm -it #{USER_OPT} -e HOME=/tmp -e TERM=#{term} -v #{PWD_}:/project -w /project #{IMAGE} idf.py menuconfig"
+end
+
+desc "build/ を削除"
+task :clean do
+  sh "rm -rf build"
+end
+
+task default: :build

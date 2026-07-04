@@ -1,0 +1,14 @@
+# M5 Atom Lite = ESP32 (無印)
+CONFIG_IDF_TARGET="esp32"
+
+# M5 Atom Lite は 4MB フラッシュ
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
+# USB(UART0) を PC との通信路（プロトコル）に使うため、アプリのログは
+# WARN 以上に絞ってプロトコル出力を汚しにくくする。PC 側は行頭のプレフィックス
+# （READY / BTN / PONG / OK / ERR）で判別すること。
+CONFIG_LOG_DEFAULT_LEVEL_WARN=y
+
+# UART コンソール（ログ出力）は既定の UART0 のまま。ボーレート 115200。
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200

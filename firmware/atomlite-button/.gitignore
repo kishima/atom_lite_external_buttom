@@ -1,0 +1,13 @@
+# ESP-IDF build artifacts
+/build/
+sdkconfig
+sdkconfig.old
+
+# component manager が展開する依存（led_strip など）
+/managed_components/
+/main/managed_components/
+dependencies.lock
+
+# 実機ごとに変わる設定
+/.serial_port
+/.env

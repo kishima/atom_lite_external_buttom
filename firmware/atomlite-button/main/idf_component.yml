@@ -1,0 +1,6 @@
+# ESP-IDF Component Manager の依存定義。
+# ビルド時に espressif/led_strip を自動取得する（managed_components/ に展開）。
+# ATOM Lite の本体 RGB LED は SK6812（GPIO27）で、led_strip の RMT ドライバで制御する。
+dependencies:
+  idf: ">=5.5"
+  espressif/led_strip: "^2.5.5"
